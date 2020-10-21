@@ -1,0 +1,201 @@
+---
+title: "Analysis of the 2018 Bike Share Toronto Ridership"
+author: "Vinky Wang"
+date: "28/06/2020"
+output: html_document
+---
+## Read in the data
+```{r message=FALSE}
+#import libraries 
+library(tidyverse)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(httr)
+library(jsonlite)
+library(geosphere)
+library(knitr)
+library(kableExtra)
+
+#combine quarterly data into a single dataframe
+q1 <- read.csv("Bike Share Toronto Ridership_Q1 2018.csv")
+q2 <- read.csv("Bike Share Toronto Ridership_Q2 2018.csv")
+q3 <- read.csv("Bike Share Toronto Ridership_Q3 2018.csv")
+q4 <- read.csv("Bike Share Toronto Ridership_Q4 2018.csv")
+total <- rbind(q1,q2,q3,q4)
+```
+
+```{r}
+#take a peek
+head(total)
+str(total)
+```
+
+## Preprocessing
+```{r results= "hide"}
+#parsing date and time into POSIXct format (easier to work with)
+total$trip_start_time <- force_tz(mdy_hm(total$trip_start_time), tzone="EST")
+total$trip_stop_time = force_tz(mdy_hm(total$trip_stop_time), tzone="EST")
+
+#add the geospatial coordinates obtained from the BikeShare API endpoint
+res = GET("https://tor.publicbikesystem.net/ube/gbfs/v1/en/station_information")
+rawToChar(res$content)
+data = fromJSON(rawToChar(res$content))
+
+station_id = as.numeric(data[["data"]][["stations"]][["station_id"]])
+lat = as.numeric(data[["data"]][["stations"]][["lat"]])
+lon = as.numeric(data[["data"]][["stations"]][["lon"]])
+geo = as.data.frame(cbind(station_id, lat, lon))
+
+#add columns corresponding to the latitude/longitude of the starting and ending stations
+total = merge(total, geo, by.x= "from_station_id", by.y="station_id", all.x = TRUE) 
+total = merge(total, geo, by.x = "to_station_id", by.="station_id", all.x=TRUE)
+total <- 
+  total %>%
+  rename(
+    from_lat = lat.x, 
+    from_lon = lon.x,
+    to_lat = lat.y,
+    to_lon = lon.y
+  )
+
+geolocation <- 
+  total %>%
+  select(trip_id, from_station_name, to_station_name, from_lat, from_lon, to_lat, to_lon)
+
+
+write.csv(geolocation, 'geolocation.csv')
+
+
+#take a peek now
+str(total)
+```
+
+## User characteristics
+### Who are the riders?
+```{r}
+annual = sum(total$user_type == "Annual Member") /length(total$user_type) 
+casual = sum(total$user_type == "Casual Member") /length(total$user_type)
+
+counts = data.frame(User=c("Annual Member", "Casual Member"), value=c(annual, casual))
+
+
+counts %>% 
+  arrange(-value) %>% 
+  mutate(value_cumsum=cumsum(value)) %>% 
+ggplot(aes(x=1, y=value, fill=User)) +
+  geom_col() +
+  geom_text(aes(x=1,y = value_cumsum-value/2, label=c("82%", "18%"))) +
+  coord_polar("y", start=0) + 
+  theme_void() + scale_fill_manual(values=c("green4", "grey64")) + labs(title="Proportion of Bike Share Riders by User Type for 2018")
+
+
+```
+82% of riders are annual members and 18% are casual members
+
+
+## Time characteristics
+### When are riders using Bike Share?
+```{r}
+#monthly use
+monthly_user <- data.frame(user_type = total$user_type, month = unlist(month(total$trip_start_time)))
+
+ggplot(monthly_user,aes(x=month,group=user_type,fill=user_type))+
+  geom_histogram(position="dodge")+theme_bw() + scale_color_manual(values=c("green4", "grey64"))+
+  scale_fill_manual(values=c("green4", "grey64"))+ 
+  labs(fill= "User Type", x="Month", y="Count", title= "Monthly Use of Bike Share by User Type for 2018")+scale_x_continuous(breaks=(1:12)) 
+
+monthly_user_tab <- 
+  monthly_user %>% 
+  group_by(user_type, month) %>%
+  summarise(count = length(month), proportion= length(month)/length(total$user_type))
+
+kable(monthly_user_tab) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+The most popular month of Bike Share ridership for annual members is in July accounting for 11.2% of the yearly use and for casual members is in August accounting for 3.7% of the yearly use. The least popular month for across both members is in January accounting for 2.2% and 0.07% of the yearly use, respectively. Overall, most Bike Share riderships occur in the third quarter (July-September) and the least in the first quarter (January-March).
+
+```{r}
+#weekly use
+weekly_user <- data.frame(user_type = total$user_type, week = unlist(wday(total$trip_start_time)))
+
+ggplot(weekly_user,aes(x=week,group=user_type,fill=user_type))+
+  geom_histogram(position="dodge")+theme_bw() + scale_color_manual(values=c("green4", "grey64"))+
+  scale_fill_manual(values=c("green4", "grey64"))+ 
+  labs(subtitle= "1 = Sunday, 7 = Saturday", fill= "User Type", x="Week", y="Count", title= "Weekly Use of Bike Share by User Type for 2018")+scale_x_continuous(breaks=(1:7)) 
+
+weekly_user_tab <- 
+  weekly_user %>% 
+  group_by(user_type, week) %>%
+  summarise(count = length(week), proportion= length(week)/length(total$user_type))
+
+kable(monthly_user_tab) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+
+```
+The most popular day of the week is on Thursday for casual members while it is on 
+Bikeshare is mainly used on Wednesdays for annual members and on Sundays for casual members. Overall, more use occurs on the weekdays for annual members and on the weekends for casual members.
+
+```{r}
+#note that promotion of Free Ride day Wednesday for the month of June
+#do we see a spike in ridership on Wednesdays for June?
+
+
+```
+
+```{r}
+#daily use
+{par(mfrow=c(2,1))
+  
+daily_user_start <- data.frame(user_type = total$user_type, hour = unlist(hour(total$trip_start_time)))
+
+ggplot(daily_user_start,aes(x=hour,group=user_type,fill=user_type))+
+  geom_histogram(position="dodge", binwidth = 1)+theme_bw() + scale_color_manual(values=c("green4", "grey64"))+
+  scale_fill_manual(values=c("green4", "grey64"))+ 
+  labs(subtitle= "0 = 12am EST, 23 = 11pm EST", fill= "User Type", x="Hour", y="Count", title= "Hourly Count for Starting Time of Bike Share Use by User Type for 2018")
+
+daily_user_stop <- data.frame(user_type = total$user_type, hour = unlist(hour(total$trip_stop_time)))
+
+ggplot(daily_user_stop,aes(x=hour,group=user_type,fill=user_type))+
+  geom_histogram(position="dodge", binwidth = 1)+theme_bw() + scale_color_manual(values=c("green4", "grey64"))+
+  scale_fill_manual(values=c("green4", "grey64"))+ 
+  labs(subtitle= "0 = 12am EST, 23 = 11pm EST", fill= "User Type", x="Hour", y="Count", title= "Hourly Count for Stopping Time of Bike Share Use by User Type for 2018")
+}
+
+hourly_user_tab <- 
+  daily_user_start %>% 
+  group_by(user_type, hour) %>%
+  summarise(count = length(hour), proportion= length(hour)/length(total$user_type))
+
+kable(hourly_user_tab) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+
+```
+The peak ridership time is at 5pm and lowest at 4am for both annual and casual members. For annual members, there is an additional distinct peak at 8am. The shape of the distribution for the hourly starting and stopping time are similar which suggests that the duration of rides of often within the hour. 
+
+```{r}
+#duration
+q1 <- as.integer(quantile(total$trip_duration_seconds, 0.25))
+q3 <- as.integer(quantile(total$trip_duration_seconds, 0.75))
+iqr <- q3-q1
+ylims = c(q1,q3)
+
+out <-
+  total%>%
+  filter(trip_duration_seconds >q1-1.5*iqr & total$trip_duration_seconds <q3+1.5*iqr) 
+
+ggplot(out, aes(x = user_type, y = trip_duration_seconds)) + 
+  geom_violin()+ scale_color_manual(values=c("green4", "grey64"))+
+  scale_fill_manual(values=c("green4", "grey64"))+ 
+  labs(fill= "User Type", x="Hour", y="Count", title= "Duration for Bikeshare ridership by User Type for 2018")
+
+
+#double checking
+duration_tab <- 
+    total %>% 
+    filter(trip_duration_seconds<120) %>%
+    summarise(count = length(trip_duration_seconds))
+```
+for annual member: higher prob density near q1-median, increasingly lower prob density beyond q3
+for casual member: fairly symmetric prob density on either side of median
+
